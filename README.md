@@ -27,7 +27,7 @@ This is slow and consumes API quota, but it can be useful for experiments where 
 pip install anthropic tqdm
 ```
 
-The script `scripts/test_tokenization.py` additionally uses `numpy` and `nest_asyncio` for ad hoc cross-model checks.
+The script `scripts/test_tokenization.py` uses the same dependencies as the tokenizer (`anthropic`, `tqdm`) and issues several API calls per test string for cross-model checks.
 
 ## Configuration
 
@@ -112,7 +112,7 @@ python src/consolidate_vocabulary.py --vocab_file path/to/custom_vocab.jsonl
 
 - `src/anthropic_tokenizer.py` — CLI and streaming tokenization logic
 - `src/consolidate_vocabulary.py` — deduplicate `anthropic_vocab.jsonl`
-- `scripts/test_tokenization.py` — informal comparisons across Claude 3 model handles (optional, uses more dependencies)
+- `scripts/test_tokenization.py` — informal comparisons across Claude 3 model handles (optional; multiple requests per case)
 - Sample JSONL inputs may be present at the repo root for quick tests
 
 ## Limitations
