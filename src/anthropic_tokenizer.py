@@ -1,21 +1,25 @@
-# %%
-from anthropic import AsyncAnthropic
+from __future__ import annotations
+
 import argparse
 import asyncio
 import json
-from tqdm import tqdm
-
 from typing import Tuple
 
+from anthropic import AsyncAnthropic
+from tqdm import tqdm
 
-async def get_tokens(client, to_tokenize: str, model=None) -> Tuple[list[str], int]:
+
+async def get_tokens(
+    client: AsyncAnthropic, to_tokenize: str, model: str | None = None
+) -> Tuple[list[str], int]:
     """
     Model defaults to haiku
     test_tokenization.py showed they're the same, unless have unicode mixed with ascii
     """
     if model is None:
         model = "claude-3-haiku-20240307"
-    tokens = []
+    tokens: list[str] = []
+    total_tokens_usage = 0
     async with client.messages.stream(
         max_tokens=1000,
         system=(
@@ -32,7 +36,7 @@ async def get_tokens(client, to_tokenize: str, model=None) -> Tuple[list[str], i
         model=model,
     ) as stream:
         async for event in stream:
-            if event.type == "content_block_delta":
+            if event.type == "content_block_delta" and event.delta.type == "text_delta":
                 tokens.append(event.delta.text)
             if event.type == "message_delta":
                 total_tokens_usage = event.usage.output_tokens
@@ -40,7 +44,9 @@ async def get_tokens(client, to_tokenize: str, model=None) -> Tuple[list[str], i
     return tokens, total_tokens_usage
 
 
-def tokenize_text(client, to_tokenize: str, model=None) -> Tuple[list[str], int]:
+def tokenize_text(
+    client: AsyncAnthropic, to_tokenize: str, model: str | None = None
+) -> Tuple[list[str], int]:
     tokens, total_tokens_usage = asyncio.run(get_tokens(client, to_tokenize, model=model))
     return tokens, total_tokens_usage
 
@@ -77,9 +83,10 @@ if __name__ == "__main__":
         print("Number of text tokens:", len(tokens))
         print("Total tokens usage (as of API):", total_tokens_usage)
 
-        with open("anthropic_vocab.jsonl", "a") as f:
-            for t in tokens:
-                f.write(json.dumps({"token": t}) + "\n")
+        if KEEP_VOCAB:
+            with open("anthropic_vocab.jsonl", "a") as f:
+                for t in tokens:
+                    f.write(json.dumps({"token": t}) + "\n")
 
         if "".join(tokens) != args.text:
             raise Exception(
@@ -107,10 +114,17 @@ if __name__ == "__main__":
                 print(f"Error tokenizing text: {entry['text']}")
                 print(e)
 
-        with open(args.file.replace(".jsonl", "_tokenized.jsonl"), "w") as f:
+        out_path = args.file.replace(".jsonl", "_tokenized.jsonl")
+        with open(out_path, "w") as f:
             for entry in to_tokenize:
                 f.write(json.dumps(entry) + "\n")
 
-        with open("anthropic_vocab.jsonl", "a") as f:
-            for t in set([t for entry in to_tokenize for t in entry["tokens"]]):
-                f.write(json.dumps({"token": t}) + "\n")
+        if KEEP_VOCAB:
+            batch_tokens: set[str] = set()
+            for entry in to_tokenize:
+                if "tokens" not in entry:
+                    continue
+                batch_tokens.update(entry["tokens"])
+            with open("anthropic_vocab.jsonl", "a") as f:
+                for t in batch_tokens:
+                    f.write(json.dumps({"token": t}) + "\n")
