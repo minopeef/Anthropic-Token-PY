@@ -14,7 +14,7 @@ if __name__ == "__main__":
     with open(args.vocab_file, "r") as f:
         tokens = [json.loads(line)["token"] for line in f]
 
-    tokens = set(tokens)
+    tokens = sorted(set(tokens))
 
     with open(args.vocab_file, "w") as f:
         for t in tokens:
