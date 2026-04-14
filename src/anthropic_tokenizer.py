@@ -3,7 +3,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-from typing import Tuple
+import sys
+from pathlib import Path
 
 from anthropic import AsyncAnthropic
 from tqdm import tqdm
@@ -11,10 +12,12 @@ from tqdm import tqdm
 
 async def get_tokens(
     client: AsyncAnthropic, to_tokenize: str, model: str | None = None
-) -> Tuple[list[str], int]:
+) -> tuple[list[str], int]:
     """
-    Model defaults to haiku
-    test_tokenization.py showed they're the same, unless have unicode mixed with ascii
+    Stream a copy of ``to_tokenize`` and collect each text delta as one segment.
+
+    Default model is ``claude-3-haiku-20240307``. ``scripts/test_tokenization.py`` shows
+    segment lists often match across Claude 3 handles, except for some mixed ASCII/Unicode cases.
     """
     if model is None:
         model = "claude-3-haiku-20240307"
@@ -46,15 +49,25 @@ async def get_tokens(
 
 def tokenize_text(
     client: AsyncAnthropic, to_tokenize: str, model: str | None = None
-) -> Tuple[list[str], int]:
+) -> tuple[list[str], int]:
     tokens, total_tokens_usage = asyncio.run(get_tokens(client, to_tokenize, model=model))
     return tokens, total_tokens_usage
 
 
-if __name__ == "__main__":
+def _batch_output_path(input_jsonl: str | Path) -> Path:
+    p = Path(input_jsonl)
+    return p.with_name(f"{p.stem}_tokenized{p.suffix}")
+
+
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--text", help="The text to tokenize", required=False, default=None)
-    parser.add_argument("--model", help="The model to be used for inference. Use a handle from Anthropic docs.", required=False, default="claude-3-haiku-20240307")
+    parser.add_argument(
+        "--model",
+        help="The model to be used for inference. Use a handle from Anthropic docs.",
+        required=False,
+        default="claude-3-haiku-20240307",
+    )
     parser.add_argument(
         "--file",
         help="A JSONL file with several texts to be tokenized",
@@ -62,44 +75,64 @@ if __name__ == "__main__":
         default=None,
     )
     parser.add_argument(
+        "--output",
+        "-o",
+        help="Output JSONL path for batch mode (default: <input_stem>_tokenized.jsonl next to the input file)",
+        required=False,
+        default=None,
+    )
+    parser.add_argument(
+        "--vocab-file",
+        help="Append observed segments to this JSONL (one object per line: {\"token\": \"...\"})",
+        required=False,
+        default="anthropic_vocab.jsonl",
+    )
+    parser.add_argument(
         "--disable-vocab",
-        help="Disable vocabulary creation",
+        help="Do not append to the vocabulary file",
         action="store_true",
         default=False,
     )
+    return parser.parse_args()
 
-    args = parser.parse_args()
 
-    assert args.text or args.file, "You must provide either a text or an input file."
+def main() -> None:
+    args = parse_args()
 
-    KEEP_VOCAB = not args.disable_vocab
+    if not args.text and not args.file:
+        print("anthropic_tokenizer: error: You must provide either --text or --file.", file=sys.stderr)
+        sys.exit(2)
 
-    # Initialize the Anthropic client. Will use a key exported as ANTHROPIC_API_KEY in your environment.
+    keep_vocab = not args.disable_vocab
+    vocab_path = Path(args.vocab_file)
+
     client = AsyncAnthropic()
 
-    if args.text:  # Quick execution and print on screen
+    if args.text:
         tokens, total_tokens_usage = tokenize_text(client, args.text, args.model)
         print("Tokens:", tokens)
         print("Number of text tokens:", len(tokens))
         print("Total tokens usage (as of API):", total_tokens_usage)
 
-        if KEEP_VOCAB:
-            with open("anthropic_vocab.jsonl", "a") as f:
+        if keep_vocab:
+            with vocab_path.open("a", encoding="utf-8") as f:
                 for t in tokens:
                     f.write(json.dumps({"token": t}) + "\n")
 
         if "".join(tokens) != args.text:
-            raise Exception(
-                """The tokenization resulted in a different string than the original. See below:\n\n========= Original =========\n{}\n\n\n========= Tokenized =========\n{}""".format(
+            raise RuntimeError(
+                "The tokenization resulted in a different string than the original. See below:\n\n"
+                "========= Original =========\n{}\n\n\n========= Tokenized =========\n{}".format(
                     args.text, "".join(tokens)
                 )
             )
 
-    if args.file:  # Read from file and write to file
-        to_tokenize = []
+    if args.file:
+        input_path = Path(args.file)
+        out_path = Path(args.output) if args.output else _batch_output_path(input_path)
 
-        # Each line is a JSON object that should be appended to to_tokenize
-        with open(args.file, "r") as f:
+        to_tokenize: list[dict] = []
+        with input_path.open(encoding="utf-8") as f:
             for line in f:
                 to_tokenize.append(json.loads(line))
 
@@ -110,21 +143,28 @@ if __name__ == "__main__":
                 entry["number_of_tokens"] = len(tokens)
                 entry["api_total_tokens_usage"] = total_tokens_usage
                 entry["tokenization_correct"] = "".join(tokens) == entry["text"]
+                entry.pop("tokenization_error", None)
             except Exception as e:
-                print(f"Error tokenizing text: {entry['text']}")
-                print(e)
+                print(f"Error tokenizing text: {entry['text']}", file=sys.stderr)
+                print(e, file=sys.stderr)
+                entry["tokenization_correct"] = False
+                entry["tokenization_error"] = repr(e)
 
-        out_path = args.file.replace(".jsonl", "_tokenized.jsonl")
-        with open(out_path, "w") as f:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with out_path.open("w", encoding="utf-8") as f:
             for entry in to_tokenize:
                 f.write(json.dumps(entry) + "\n")
 
-        if KEEP_VOCAB:
+        if keep_vocab:
             batch_tokens: set[str] = set()
             for entry in to_tokenize:
                 if "tokens" not in entry:
                     continue
                 batch_tokens.update(entry["tokens"])
-            with open("anthropic_vocab.jsonl", "a") as f:
+            with vocab_path.open("a", encoding="utf-8") as f:
                 for t in batch_tokens:
                     f.write(json.dumps({"token": t}) + "\n")
+
+
+if __name__ == "__main__":
+    main()
